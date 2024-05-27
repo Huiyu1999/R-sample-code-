@@ -8,7 +8,7 @@ library(car)
 
 ### Combine datasets, clean data, and run regressions ###
 
-# Part 1: Data Cleaning
+# Part 1: Data Manipulating (Cleaning)
 
 # Dataset 1: Financial self-sufficiency rate
 fin <- read_excel("C:/Users/ASUS/Desktop/BJTU/毕业论文/城投混改数据/【12】财政自给率1.xlsx")
@@ -19,7 +19,7 @@ fin_long <- fin %>%
   separate(variable, into = c("variable", "c"), sep = ":") %>%
   separate(指标名称, into = c("年份", "d"), sep = "-")
 
-# Clean the financial self-sufficiency rate data
+# Filtered the financial self-sufficiency rate data
 fin_cleaned <- fin_long %>%
   select(省份 = variable, 年份, 财政自给率 = c)
 
@@ -37,11 +37,7 @@ debt_data <- bind_rows(lapply(years, function(year) {
   data
 }))
 
-# Clean the debt data
-debt_cleaned <- debt_data %>%
-  select(省份, Year, 债务余额 = DebtBalanceColumn)  # Adjust DebtBalanceColumn to the actual column name for debt balance
-
-write.csv(debt_cleaned, "城投债余额统计-汇总-2006-2020.csv")
+write.csv(debt_data, "城投债余额统计-汇总-2006-2020.csv")
 
 # Part 2: Read and Clean Final Dataset
 
@@ -64,6 +60,15 @@ data_cleaned <- data_cleaned %>%
     Year = as.numeric(Year),
     Private = as.factor(Private)
   )
+remove_outliers <- function(df, column) {
+  Q05 <- quantile(df[[column]], 0.05)
+  Q95 <- quantile(df[[column]], 0.95)
+  df %>%
+    filter(df[[column]] >= Q05 & df[[column]] <= Q95)
+}
+
+# Apply outlier removal to dependent var
+data_final <- remove_outliers(data_final, "Spread") 
 
 # Merge with financial self-sufficiency rate data
 data_merged <- data_cleaned %>%
