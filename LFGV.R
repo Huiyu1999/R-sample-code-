@@ -19,8 +19,12 @@ fin_long <- fin %>%
   separate(variable, into = c("variable", "c"), sep = ":") %>%
   separate(指标名称, into = c("年份", "d"), sep = "-")
 
+# Clean the financial self-sufficiency rate data
+fin_cleaned <- fin_long %>%
+  select(省份 = variable, 年份, 财政自给率 = c)
+
 # Write the cleaned data to CSV
-write.csv(fin_long, "【12】财政自给率-格式转化.csv")
+write.csv(fin_cleaned, "【12】财政自给率-格式转化.csv")
 
 # Dataset 2: Local government debt balance
 debt_data_path <- "C:/Users/ASUS/Desktop/BJTU/毕业论文/城投混改数据/114 2021-2006年地方债务余额/地级市/城市地方债务余额2006-2021年"
@@ -33,7 +37,11 @@ debt_data <- bind_rows(lapply(years, function(year) {
   data
 }))
 
-write.csv(debt_data, "城投债余额统计-汇总-2006-2020.csv")
+# Clean the debt data
+debt_cleaned <- debt_data %>%
+  select(省份, Year, 债务余额 = DebtBalanceColumn)  # Adjust DebtBalanceColumn to the actual column name for debt balance
+
+write.csv(debt_cleaned, "城投债余额统计-汇总-2006-2020.csv")
 
 # Part 2: Read and Clean Final Dataset
 
@@ -57,21 +65,29 @@ data_cleaned <- data_cleaned %>%
     Private = as.factor(Private)
   )
 
+# Merge with financial self-sufficiency rate data
+data_merged <- data_cleaned %>%
+  left_join(fin_cleaned, by = c("省份", "Year" = "年份"))
+
+# Merge with debt balance data
+data_final <- data_merged %>%
+  left_join(debt_cleaned, by = c("省份", "Year"))
+
 # Create a separate dataset for correlation analysis by excluding 'Year'
-data_cor <- data_cleaned %>%
+data_cor <- data_final %>%
   select(-Year) %>%
   na.omit()
 
 # Convert to data frame for compatibility with base R functions
-data_cleaned <- as.data.frame(data_cleaned)
+data_final <- as.data.frame(data_final)
 data_cor <- as.data.frame(data_cor)
 
 # Descriptive statistics
-stargazer(data_cleaned, type = "text", out = "DescriptiveAnalysis.txt")
+stargazer(data_final, type = "text", out = "DescriptiveAnalysis.txt")
 
 # Separate data into mixed and non-mixed companies for further analysis
-data_mixed <- filter(data_cleaned, Private == 1)
-data_non_mixed <- filter(data_cleaned, Private == 0)
+data_mixed <- filter(data_final, Private == 1)
+data_non_mixed <- filter(data_final, Private == 0)
 
 # Save descriptive statistics for mixed and non-mixed companies
 stargazer(data_mixed, type = "text", out = "描述性统计-加rating-已混改企业.txt")
@@ -82,19 +98,19 @@ cor_data <- cor(data_cor)
 write.csv(cor_data, "regression-cor.csv")
 
 # Aggregate spread by Rating and Private/Type and print results
-spread_by_rating_private <- aggregate(data_cleaned$Spread, by = list(data_cleaned$Rating, data_cleaned$Private), FUN = length)
+spread_by_rating_private <- aggregate(data_final$Spread, by = list(data_final$Rating, data_final$Private), FUN = length)
 print(spread_by_rating_private)
 
-spread_by_rating_type <- aggregate(data_cleaned$Spread, by = list(data_cleaned$Rating, data_cleaned$Type), FUN = length)
+spread_by_rating_type <- aggregate(data_final$Spread, by = list(data_final$Rating, data_final$Type), FUN = length)
 print(spread_by_rating_type)
 
 # Part 3: Regression Analysis
 
 # Regression analysis without interaction effects
-lm1 <- lm(Spread ~ Type + Maturity + Volume + Explicit + Special + Rating + Rating1 + Grade + Area + List + Asset + Leverage + Collateral + ROA + Turnover + Year, data = data_cleaned)
+lm1 <- lm(Spread ~ Type + Maturity + Volume + Explicit + Special + Rating + Rating1 + Grade + Area + List + Asset + Leverage + Collateral + ROA + Turnover + Year, data = data_final)
 
 # Regression analysis with interaction effects
-lm2 <- lm(Spread ~ Type + I(Private * Type) + Maturity + Volume + Explicit + Special + Rating + Rating1 + Grade + Area + List + Asset + Leverage + Collateral + ROA + Turnover + Year, data = data_cleaned)
+lm2 <- lm(Spread ~ Type + I(Private * Type) + Maturity + Volume + Explicit + Special + Rating + Rating1 + Grade + Area + List + Asset + Leverage + Collateral + ROA + Turnover + Year, data = data_final)
 
 # Save regression results
 stargazer(lm1, lm2, type = "text", column.labels = c("模型1：无交互效应", "模型2：含交互效应"), out = "回归结果-加rating-回归1.txt")
@@ -106,8 +122,7 @@ lma3 <- lm(Spread ~ Private + LFS2 + I(Private * LFS2) + Maturity + Volume + Exp
 lma4 <- lm(Spread ~ Private + LFS3 + I(Private * LFS3) + Maturity + Volume + Explicit + Special + Rating + Grade + Area + List + Asset + Leverage + Collateral + ROA + Turnover + Year, data = data_mixed)
 
 # Save regression results for mixed companies
-stargazer(lma1, lma2, type = "text", column.labels = c("模型1：无交互效应", "模型2：含交互效应"))
-stargazer(lma3, lma4, type = "text", column.labels = c("模型1：无交互效应", "模型2：含交互效应"))
+stargazer(lma1, lma2, lma3, lma4, type = "text", out = "regressionresult2year.txt")
 
 # Variance Inflation Factor (VIF) check
 vif(lma2)
