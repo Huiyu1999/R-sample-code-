@@ -1,0 +1,299 @@
+---
+title: "DIL-Data Task"
+author: "Yu Hui"
+date: "2024-06-22"
+geometry: margin=2cm
+output: pdf_document
+
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 50)
+library(dplyr)
+library(purrr)
+library(stargazer)
+```
+
+## Load Data
+
+```{r}
+df_outcome <- read.csv("student_follow_ups.csv")
+df_stu_base<-read.csv("student_baseline.csv")
+df_sch_base<-read.csv("schools.csv")
+df_visit<-read.csv("school_visits_log.csv")
+```
+
+## Detect Missing Values
+```{r}
+missing_percentages <- df_outcome %>%
+  summarise_all(~ mean(is.na(.)) * 100)
+missing_percentages <- as.data.frame(t(missing_percentages))
+colnames(missing_percentages) <- "Missing_Percentage"
+print(missing_percentages)
+```
+It seems like outcome of pregnancy and whether have children have great amount of missing values, thus these two outcome variable may be carefully considered when processed regression.
+
+## Concatenate Datasets
+
+```{r}
+merged_df <- merge(df_outcome, df_stu_base, by = "student_id", all.x = TRUE)
+merged_df <- merge(merged_df,df_sch_base,by="school_id",all.x=TRUE)
+df_visit<- df_visit %>% select(-year)
+merged_df <- merge(merged_df,df_visit,by="school_id",all.x=TRUE)  
+```
+
+## Balance Table
+
+```{r}
+### school level covariates
+df_sch_base_1 <-df_sch_base[,-c(1:3)] %>%
+  mutate(Urban = ifelse(location == 1, 1, 0))%>%
+  select(-location)
+table <-df_sch_base_1 %>% 
+  group_by(treatment)%>%
+  summarize_all(list(~mean(.))) %>%
+  mutate_all(list(~round(., 3))) %>%
+  t() %>%
+  as.data.frame()
+colnames(table) <- c("mean_control", "mean_treat")
+
+p_values <- data.frame(variable = rownames(table), p_value = NA)
+
+# Calculate p-values using t-tests
+for (var in rownames(table)[-1]) { # Exclude the treatment row itself
+  control_values <- df_sch_base_1 %>% filter(treatment == 0) %>% pull(var)
+  treat_values <- df_sch_base_1 %>% filter(treatment == 1) %>% pull(var)
+  
+  # Perform t-test
+  t_test_result <- t.test(control_values, treat_values)
+  
+  # Store p-value
+  p_values$p_value[p_values$variable == var] <- t_test_result$p.value
+}
+
+# Merge the means and p-values
+final_table_A <- cbind(table, p_values[,-1])
+final_table_A<-final_table_A[-1,]
+
+# Display the final table
+knitr::kable(final_table_A)
+```
+The balance table shows the means of covariates for the control and treatment groups.P-values indicate if the difference in means between groups is statistically significant.In this table, only n_latrines shows a significant difference (p = 0.0314354), suggesting a potential imbalance in the number of latrines between the groups.The balance table indicates that the randomization was generally successful, with the exception of n_latrines. This imbalance should be addressed in the analysis phase to ensure it does not confound the treatment effects. 
+
+```{r}
+## indivial level covariates
+table_ind <- merged_df %>%
+  filter(year==3) %>%
+  select(c(sex,yob,treatment)) %>%
+  mutate(sex = ifelse(sex == 1, 1, 0))%>%
+  group_by(treatment)%>%
+  summarize_all(list(~mean(.))) %>%
+  mutate_all(list(~round(., 3))) %>%
+  t() %>%
+  as.data.frame()
+colnames(table_ind) <- c("mean_control", "mean_treat")
+
+# Function to calculate p-values
+calc_p_value <- function(var) {
+  control_values <- merged_df %>% filter(year == 3 & treatment == 0) %>% pull(!!sym(var))
+  treat_values <- merged_df %>% filter(year == 3 & treatment == 1) %>% pull(!!sym(var))
+  t.test(control_values, treat_values)$p.value
+}
+
+# Calculate p-values for the relevant columns
+variables <- c("sex", "yob")
+p_values <- map_dbl(variables, calc_p_value)
+
+# Create a dataframe for p-values
+p_value_df <- data.frame(variable = rownames(table_ind)[-1], p_value = p_values)
+rownames(p_value_df) <- p_value_df$variable
+p_value_df$variable <- NULL
+
+# Merge the p-values with the table of means
+final_table_B <- cbind(table_ind, p_value = c(NA, p_values))
+final_table_B<-final_table_B[-1, ]
+
+
+# Display the final table
+knitr::kable(final_table_B)
+
+```
+
+The balance table indicates that the randomization was generally successful across individual level confounders.
+
+## Regression
+We will choose cross-section linear regression model to study the impact of the trearment.The unit of analysis is individual students. The regresssion specfication is: 
+
+\begin{equation}
+\text{Outcome}_{it} = \beta_0 + \beta_1 \text{Treatment}_i + \beta_2 \text{BaselineCovariates}_i + \gamma_d + \epsilon_{it}
+\end{equation}
+Where:
+
+\begin{itemize}
+    \item[$\text{Outcome}_{it}$:] The outcome of interest (school evasion, teen pregnancy, marriage) for student $i$ at time $t$ (3 or 5 years).
+    \item[$\text{Treatment}_i$:] Treatment indicator for student $i$ (1 if treated, 0 if control).
+    \item[$\text{BaselineCovariates}_i$:] Baseline covariates controls for student $i$ (The control variables include school level controls and student level controls. Specifically, they are sex, age as individual characteristics, number of teachers, number of female teachers, number of female head teachers, number of female students, number of school within 2km, average teacher age, average student score, number of latrines as school level characteristics. To avoid muticonlinearity between total number of teachers,  number of female teachers and number of male teachers, exculde number of male teachers in control selection).
+    \item[$\gamma_d$:] District fixed effects.(urban, district, stratum and month fixed effect varaibles )
+    \item[$\epsilon_{it}$:] Error term.
+\end{itemize}
+
+```{r}
+merged_df_3_example<- merged_df %>%
+  filter(year == 3)
+m <- merged_df_3_example %>% 
+  group_by(died) %>%
+  summarize_all(list(~mean(.))) %>%
+  mutate_all(list(~round(., 3))) %>%
+  t()
+colnames(m) <-c("Unknown","Alive","Died","NA")
+knitr::kable(m)
+```
+
+We can see that all died student have no/unknown data of outcome variables including marriage and drop out, thus removing the died student will not cause much loss in outcome data, we can safely remove them. 
+
+```{r}
+merged_df_3<- merged_df %>%
+  filter(year == 3 ,died == 0) %>%
+  mutate(age = 2010-yob) %>% ## create col of age instead of yob, which is more interpretable
+  filter(age > 0) %>%
+  mutate(urban = ifelse(location == 1, 1, 0))%>%
+  mutate(sex = ifelse(location == 1, 1, 0))%>%
+  mutate(stratum = as.factor(stratum)) %>%
+  mutate(district = as.factor(district)) %>% 
+  mutate(district = as.factor(month)) %>% 
+  select(-c(school_id,student_id,year,yob,location))
+```
+
+```{r}
+##(merged_df_3)
+```
+We can see that there is no 
+
+```{r}
+model.3.mar <- lm(married ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_3)
+model.3.pregnant <- lm(pregnant ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_3)
+model.3.children <- lm(children ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_3)
+
+
+#summary(model.3.dropout)
+stargazer(model.3.mar,model.3.pregnant,model.3.children, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results -- 3 year")
+```
+```{r}
+model.3.dropout <- lm(dropout ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_3)
+stargazer(model.3.dropout, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results -- 3 year")
+```
+
+
+For three year sample, as we can see from the table above, the coefficient before treatment is not significant (at 5% level) for outcome variable: marriage, children and pregnant, implying that the intervention did not change these concerns evidently. However, we can see a significant negative impact of treatment on drop-out rate, meaning that offer transfers can decrease students' dropout.
+
+```{r}
+## effect after 5 years
+merged_df_5<- merged_df %>%
+  filter(year == 5 ,died == 0) %>%
+  mutate(age = 2010-yob) %>% ## create col of age instead of yob, which is more interpretable
+  filter(age > 0) %>%
+  mutate(urban = ifelse(location == 1, 1, 0))%>%
+  mutate(sex = ifelse(location == 1, 1, 0))%>%
+  mutate(stratum = as.factor(stratum)) %>%
+  mutate(district = as.factor(district)) %>% 
+  mutate(district = as.factor(month)) %>% 
+  select(-c(school_id,student_id,year,yob,location))
+```
+
+```{r}
+model.5.mar <- lm(married ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5)
+
+model.5.pregnant <- lm(pregnant ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5)
+
+model.5.children <- lm(children ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5)
+
+model.5.dropout <- lm(dropout ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5)
+#summary(model.3.dropout)
+stargazer(model.5.mar,model.5.pregnant,model.5.children,model.5.dropout, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results Excluding Stratum Coefficients")
+
+```
+
+```{r}
+model.5.dropout <- lm(dropout ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5)
+stargazer(model.5.dropout, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results -- 3 year")
+```
+
+
+For five year sample, as we can see from the table above, the coefficient before treatment is not significant (at 5% level) for outcome variable: marriage, children and pregnant, implying that the intervention did not change these concerns evidently. However, we can still see a significant impact of treatment on drop-out rate. Moreover, the impact is greater than 3 year situation, meaning that the effects of treatment amplifed overtime. 
+
+
+## Further Analysis
+
+I want to seperately analyze the impact of treatment on male and female students.
+
+```{r}
+merged_df_5_f<- merged_df_5 %>% filter(sex == 0)
+model.5.dropout <- lm(dropout ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5_f)
+stargazer(model.5.dropout, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results -- 3 year")
+```
+
+```{r}
+merged_df_5_m<- merged_df_5 %>% filter(sex == 1)
+model.5.dropout <- lm(dropout ~ treatment+ sex + age + n_teachers + n_teachers_fem+ female_head_teacher + n_students_fem +n_schools_2km + av_teacher_age + av_student_score+ n_latrines + urban + district + stratum + month, data = merged_df_5_m)
+stargazer(model.5.dropout, type = "text",
+            omit = "stratum", omit.labels = "stratum",
+            star.cutoffs = c(0.05, 0.01, 0.001),
+            #dep.var.labels = c("Outcome"),
+            keep.stat = c("n", "rsq", "adj.rsq", "f"),
+            single.row = TRUE,
+            title = "Regression Results -- 3 year")
+```
+
+
+```{r}
+library(ggplot2)
+dropout_rate_by_sex <- merged_df_3 %>%
+  group_by(sex) %>%
+  summarize(dropout_rate = mean(dropout, na.rm = TRUE))
+
+# Create the plot
+ggplot(dropout_rate_by_sex, aes(x = sex, y = dropout_rate, fill = sex)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Dropout Rate by Sex",
+       x = "Sex",
+       y = "Dropout Rate") +
+  theme_minimal()
+```
+(should turn sex into categorical variable but run out of time..)
+
+As we can see from the analysis above, the impact of treatment mostly come from change in dropout rate of male students, not female. and from the graph above, we can see that for male student have lower drop out rate.
+
+Further, I want to conduct the same analysis on variable including married, pregnant and children, to see if there is also hetergenous treatment effects.
+
+
