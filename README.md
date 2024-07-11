@@ -1,6 +1,6 @@
 # R-sample-code
 
-This is the sample code for a data task. The requirement is of this data task is follows:
+This is the sample code for a data task. The requirement is of this data task is follows, and my answer to this data task can be found in the R markdown file[https://github.com/Huiyu1999/R-sample-code-/blob/main/Report.Rmd]  and it can be rendered to a pdf[https://github.com/Huiyu1999/R-sample-code-/blob/main/Report.pdf]
 
 ## **Study Description**
 
